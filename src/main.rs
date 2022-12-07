@@ -1,8 +1,10 @@
 use std::fs::{OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Lines, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::str::from_utf8;
 use std::{fs, net, thread};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 
 fn main() {
@@ -15,7 +17,7 @@ fn main() {
                 println!("new connection with {}", stream.peer_addr().unwrap());
                 thread::spawn(move || {
                     //maak thread aan en verplaats ownership
-                    handle_connection(stream)
+                    handle_file_connection(stream)
                 });
             }
             Err(e) => panic!("error {}, shutting down", e),
@@ -23,6 +25,47 @@ fn main() {
     }
 
     drop(listener);
+}
+
+fn handle_file_connection(mut stream: TcpStream){
+    let mut data = [0 as u8; 50]; //buffer aanmaken van 50 bytes
+    let mut incomming = String::new();
+    let incomming_clone = incomming.clone();
+
+    'outer: while match stream.read(&mut data) {
+        //inkomende data blijven lezen en checken op errors
+        Ok(size) => {
+            stream.write(&data[0..size]).unwrap(); // response naar client
+
+            incomming = from_utf8(&data).unwrap().trim_matches(char::from(0)).to_string();
+            let mut lines = incomming.lines().into_iter();
+            let mut content:Arc<Mutex<Vec<&str>>> = Arc::new(Mutex::new(Vec::new())) ;
+            for line in lines{
+                content.lock().unwrap().push(line);
+                content.lock().unwrap().push("\n");
+            }
+
+            let file_name = content.lock().unwrap()[0];
+            content.lock().unwrap().remove(0);
+            let mut file = OpenOptions::new().write(true).create(true).open(file_name).unwrap();
+
+            match file.write_all(content.lock().unwrap().concat().as_ref()){
+                Ok(_) => println!("ok"),
+                Err(e) => println!("error: {}", e),
+            };
+            true
+        }
+        Err(e) => {
+            println!(
+                "error occured {}, shutting down connection with {}",
+                e,
+                stream.peer_addr().unwrap()
+            );
+            stream.shutdown(Shutdown::Both).unwrap(); //reading en writing uitschakelen
+            false
+        }
+    } {}
+
 }
 
 fn handle_connection(mut stream: TcpStream) {
